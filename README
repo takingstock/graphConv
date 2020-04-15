@@ -1,1 +1,8 @@
 tis code is oin to serve as te base for experiments on underlyin strucure of documents
+It basically extracts multiple features from an underlyin document like
+- text features
+- convolution features ( raw image passed into stacked conv )
+- positional encoding
+- sequence of text
+and finally mushes all of it into a gcn and passes it into a multi hhead attention block and finally outputs a sigmoid / multi label
+classification on whether the text/text box is relevant AND its label if relevant
