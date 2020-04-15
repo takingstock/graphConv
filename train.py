@@ -19,11 +19,12 @@ class DataGenerator(K.utils.Sequence):
         self.ohe_inp_ = list()
         self.labels_ = list()
         self.neighbours_ = list()
+        self.batch_size = batch_size
 
         for key, val in self.data_dict_.items():
             ## val ( orderedNodes, neighBours, labels, OHE , features )
           img = cv2.imread( 'IM/'+key )
-          rsz_im = cv2.resize( img, ( std_wd, std_ht ) )
+          rsz_im = cv2.resize( img, ( std_ht, std_wd ) )
           order_list = list( val[0].keys() )
           order_list.sort()
           tempOrder = list()
@@ -54,6 +55,7 @@ class DataGenerator(K.utils.Sequence):
         y = self.labels_[ index*self.batch_size : (index+1)*self.batch_size ]
         # Find list of IDs
         # Generate data
+        print('INPUT size of OE -- ', np.asarray( ohe_inp_ ).shape )
         return [ np.asarray( img ), np.asarray( feat_ ), np.asarray( inpt_pos_ ), np.asarray( ohe_inp_ ), np.asarray( neighbours_ ) ], np.asarray( y )
 
 
@@ -66,25 +68,31 @@ valBatch = masterBatch
 trgSeq = DataGenerator( trgBatch, batch_size=1 )
 valSeq = DataGenerator( valBatch, batch_size=1 )
 
+convInp = K.Input( shape=( std_wd, std_ht, std_channel ) )
+featInp = K.Input( shape=( None, 11))
+
+oheInp = K.Input( shape=( None, 30, 78 ) )
+cropInp_pos = K.Input( shape=( None, 4 ), name='kansas' )
+neighbours_Input = K.layers.Input( shape=(None,11) )
+
 ## modellingg starts
 ## FEATURE LAYERS
-finalOPForResizeLayer , im_conv_layer , featInpLayer = MOD.modelForImageAndFeatManipulation( batch_size=1 )
-oheLayer = MOD.modelForOhe()
-posEncLayer = MOD.applyPosEncodin()
+finalOPForResizeLayer , im_conv_layer , featInpLayer = MOD.modelForImageAndFeatManipulation( convInp, featInp,  batch_size=1 )
+oheLayer = MOD.modelForOhe( oheInp )
+posEncLayer = MOD.applyPosEncodin( cropInp_pos )
 
-finalFeatLayer = K.layers.concatenate( [ oheLayer, posEncLayer, featInpLayer, finalOPForResizeLayer, im_conv_layer ] ) ## last dimension size = 275
+finalFeatLayer = K.layers.concatenate( [ oheLayer, posEncLayer, featInpLayer, finalOPForResizeLayer, im_conv_layer ] ) ## last dimension size = 275 ( + 200 if we avoid maxpool at ohe layer)
 print( finalFeatLayer )
 ## FEATURE LAYERS
 
 ## graphhhhhhh convvvvvv
-neighbours_Input = K.layers.Input( shape=(None,4) )
-graphConvClass = MOD.graphConv( finalFeatLayer, input_dim=275 )
+graphConvClass = MOD.graphConv( finalFeatLayer, input_dim=275+200 )
 graphConvLayer = graphConvClass( neighbours_Input )
 print( graphConvLayer )
 ## graphhhhhhh convvvvvv
 
 postgraphConv_drop = K.layers.Dropout( 0.15 )( graphConvLayer )
-postgraphConv1D_5 = K.layers.Conv1D( filters=128 , kernel_size=5, activation='relu' )( postgraphConv_drop )
+postgraphConv1D_5 = K.layers.Conv1D( filters=128 , kernel_size=5, activation='relu', padding='same' )( postgraphConv_drop )
 postgraphConv1D_1 = K.layers.Conv1D( filters=64 , kernel_size=1, activation='relu' )( postgraphConv1D_5 )
 print( postgraphConv1D_1 )
 ## OP DIMENSION - last - 64
@@ -99,3 +107,10 @@ flayer = MOD.finalLayer( mhaLayer, totalClasses )
 print( flayer )
 ## final layer 
 #print( finalOPForResize, im_repeat, featInp, oheLayer )
+adam = K.optimizers.Adam(lr=0.0001)
+#sgd = K.optimizers.SGD(lr=0.0001, decay=1e-6, momentum=0.9, nesterov=True)
+## np.asarray( img ), np.asarray( feat_ ), np.asarray( inpt_pos_ ), np.asarray( ohe_inp_ ), np.asarray( neighbours_ )
+model = K.models.Model( [ convInp, featInp, cropInp_pos, oheInp, neighbours_Input ] , flayer , name='masaladosa')
+model.compile( optimizer=adam , loss='binary_crossentropy', metrics=['accuracy'] )
+
+model.fit_generator( generator=trgSeq , validation_data=valSeq , epochs=1 , verbose=1 )

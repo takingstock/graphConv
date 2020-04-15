@@ -92,17 +92,24 @@ def scaled_dot_product_attention(q, k, v, mask=None):
 
   return output, attention_weights
 
+def glorot(shape, name=None):
+    """Glorot & Bengio (AISTATS 2010) init."""
+    init_range = np.sqrt(6.0/(shape[0]+shape[1]))
+    initial = tf.random_uniform(shape, minval=-init_range, maxval=init_range, dtype=tf.float32)
+    return tf.Variable(initial, name='graphConv_wt', trainable=True)
+
 class graphConv(layers.Layer):
   def __init__(self, feat_, input_dim, act=tf.nn.relu, units=512 ): ## this will need to be updated based on total o/p shape
     super( graphConv , self).__init__()
     w_init = tf.random_normal_initializer()
-    self.w = tf.Variable( initial_value=w_init(shape=(input_dim, units),
-                                              dtype='float32'),
-                         trainable=True)
+    #w_init = tf.zeros_initializer()
+    self.w = self.add_weight("kernel",
+                                  shape=[ input_dim , units ])
+
+    #self.w = tf.Variable( initial_value=w_init(shape=(input_dim, units), dtype='float32_ref' ), trainable=True ) #dtype='float32'),
     b_init = tf.zeros_initializer()
-    self.b = tf.Variable(initial_value=b_init(shape=(units,),
-                                              dtype='float32'),
-                         trainable=True)
+    self.b = self.add_weight("bias",
+                                  shape=[ units, ])
 
     self.feat = feat_
     self.activation = act
@@ -110,18 +117,18 @@ class graphConv(layers.Layer):
   def call(self, inputs):
   #def call(self, inputs):
     neighbours = inputs
+    print( self.feat )
+    print( self.w )
     feat_w_dot = tf.matmul( self.feat, self.w ) # output = NUM nodes x units
     gcn_op = tf.matmul( neighbours, feat_w_dot ) # op = NUM nodes x units
     final_op = gcn_op + self.b # NUM nodes x units + units x 1
     return self.activation( final_op )
 
-def modelForImageAndFeatManipulation( batch_size ):# inp_size is a tuple  w, h
+def modelForImageAndFeatManipulation(convInp, featInp, batch_size ):# inp_size is a tuple  w, h
     '''
     incomin - size of resized inp im
     outoin - downscaled version of image  ( down by 4 times ) tat will be sent to cropppin
     '''
-    convInp = K.Input( shape=( std_wd, std_ht, std_channel ) ) 
-    featInp = K.Input( shape=( None, 11))
     #cropInp = K.backend.placeholder(shape=( None, 4))
 
     ## tf.image.crop_and_resize takes in 2d tensor of feats but in our case it will be batch, num boxes and last Dim
@@ -149,13 +156,21 @@ def modelForImageAndFeatManipulation( batch_size ):# inp_size is a tuple  w, h
     ## this section is for redirection to crop
     #cropOP = tf.image.crop_and_resize( image=maxpool , boxes=cropInp , box_indices=cropIndices , crop_size=( 12 , 8 ) )
     cropOP = tf.image.crop_and_resize( image=maxpool , boxes=featInpForSplit , box_indices=cropIndices , crop_size=( 12 , 8 ) )
-    finalOP = tf.split( cropOP, batch_size , axis=0 ) # tis sould be of sape batch , num boxes , crop sizes , channels
-    print( cropOP )
-    conv3Input = K.Input( tensor=cropOP )
-    post_crop_conv3 = K.layers.Conv2D( filters=10, kernel_size=(5,5), activation='relu' )( conv3Input )
-    flatten = K.layers.Reshape( (10, 32 ) )( post_crop_conv3 ) ## since conv1d takes 3-d input
-    finalConv1D = K.layers.Conv1D( filters=10 , kernel_size=1 )( flatten )
-    finalOPForResize = K.layers.Reshape( (-1, 100) )( finalConv1D ) ## just so that it matchhes te paper :( 
+    cropTfOP = tf.split( cropOP, batch_size, axis=0 ) # tis sould be of sape batch , num boxes , crop sizes , channels
+    finalOP = tf.stack( cropTfOP )
+    #finalOP = tf.split( cropOP, batch_size , axis=0 ) # tis sould be of sape batch , num boxes , crop sizes , channels
+    print( np.asarray( cropTfOP ) )
+    print( finalOP )
+    conv3Input = K.Input( tensor=finalOP )
+    post_crop_conv3 = K.layers.Conv3D( filters=10, kernel_size=(1,5,5), activation='relu' )( conv3Input )
+    print( '*********' )
+    print( post_crop_conv3 )
+    flatten = K.layers.Reshape( (numBoxes, 32*10 ), name='Reshape_1' )( post_crop_conv3 ) ## since conv1d takes 3-d input
+    print( flatten )
+    finalConv1D = K.layers.Conv1D( filters=100 , kernel_size=1, name='Conv1_1' )( flatten )
+    print( '*********' )
+    print( finalConv1D )
+    finalOPForResize = K.layers.Reshape( (numBoxes, 100), name='Reshape_2' )( finalConv1D ) ## just so that it matchhes te paper :( 
     ## this section is for redirection to crop
 
     ## thhis section is for full conv of img
@@ -173,24 +188,33 @@ def modelForImageAndFeatManipulation( batch_size ):# inp_size is a tuple  w, h
     ## thhis section is for full conv of img
     return finalOPForResize, im_repeat, featInp
 
-def modelForOhe( ):
-    oheInp = K.Input( shape=( None, 30, 78 ) )
+def modelForOhe( oheInp ):
     conv1 = K.layers.Conv2D( filters=50 , kernel_size=(1, 3), padding='same', input_shape=( None, 30, 78 ), activation='relu' )( oheInp )
     conv2 = K.layers.Conv2D( filters=10 , kernel_size=(1, 3), padding='same', activation='relu' )( conv1 )
     #### paper indicates max pool BUT it only ives a 2D tensor as output 
     ### we lose the 'number of nodes' dimension ..so flatten and reshape
     #maxpool_full_ = K.layers.GlobalMaxPooling2D()( conv2 )
-    maxpool_full_ = K.layers.MaxPooling2D(pool_size=4)( conv2 )
+
+    maxpool_full_ = K.layers.MaxPooling2D(pool_size=4)( conv2 ) ## thhhhis is bull sit 
+    ## if u max pool it will reduce W and H dimension whhhich in this case will be num boxes and max length
+    ## so IF V wanna return batch, num boxes as it is, the last dimensoin can never be fixed !!!
+    ## so eiter we will need to modify gcn input to take variable lenthh feat input or avoid maxpool
     print( conv2 )
     print( maxpool_full_ )
-    returnOhe = K.layers.Reshape( ( tf.shape( oheInp )[1], 10*10 ) )( maxpool_full_ )  ## thhis is done so tat final op is batch, num nodes, whatever is left
+    returnOhe = K.layers.Reshape( ( tf.shape( oheInp )[1], 30*10 ), name='Reshape_3' )( conv2 )  ## thhis is done so tat final op is batch, num nodes, whatever is left
+    #returnOhe = K.layers.Reshape( ( tf.shape( oheInp )[0],  tf.shape( oheInp )[1], 7*10 ), name='Reshape_3' )( maxpool_full_ )  ## thhis is done so tat final op is batch, num nodes, whatever is left
+    print( returnOhe )
     return returnOhe
 
 def finalLayer( mhaOP , totLabels ):
-    final_layer_conv1_0 = K.layers.Conv1D( filters=64 , kernel_size=1, activation='relu' )( mhaOP )
+    print('FINAL LAYER --------', mhaOP )
+    final_layer_conv1_0 = K.layers.Conv1D( filters=64 , padding='same' , kernel_size=1, activation='relu', name='Conv1_2' )( mhaOP )
     dropout_0 = K.layers.Dropout( 0.15 )( final_layer_conv1_0 )
-    final_layer_conv1_1 = K.layers.Conv1D( filters=64 , kernel_size=1, activation='relu' )( dropout_0 )
-    final_layer_conv1_2 = K.layers.Conv1D( filters=totLabels, kernel_size=1, activation='sigmoid' )( final_layer_conv1_1 )
+    print( final_layer_conv1_0 )
+    final_layer_conv1_1 = K.layers.Conv1D( filters=64 , padding='same', kernel_size=1, activation='relu', name='Conv1_3' )( dropout_0 )
+    print( final_layer_conv1_1 )
+    final_layer_conv1_2 = K.layers.Conv1D( filters=totLabels , padding='same' , kernel_size=1, activation='sigmoid', name='Conv1_4' )( final_layer_conv1_1 )
+    print( final_layer_conv1_2 )
     return final_layer_conv1_2
 
 class PossEnc( K.layers.Layer ):
@@ -218,8 +242,7 @@ class PossEnc( K.layers.Layer ):
             retVal.append( res )
         return tf.stack( retVal )    
 
-def applyPosEncodin( ):
-    cropInp_pos = K.Input( shape=( None, 4 ), name='kansas' )
+def applyPosEncodin( cropInp_pos ):
     peClass = PossEnc()
     classOP = peClass( cropInp_pos )
     finalPE_op = K.backend.repeat( classOP , tf.shape( cropInp_pos )[0] ) ## thhis willl op = boxes, batces, o/p dim BUT we need to reshape

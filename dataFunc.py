@@ -112,7 +112,7 @@ def createFeats( fname , nodeL ):
         feats.extend( [ y1, x1, y2, x2 ] )
         featEle.append( feats )
 
-    return feats    
+    return featEle    
 
 def _get_text_features(data):
     data = str(data)
